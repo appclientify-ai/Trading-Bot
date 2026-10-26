@@ -9,7 +9,7 @@ warnings.filterwarnings('ignore')
 from mcx_feed import get_live_mcx_price, calculate_trade_probability
 
 
-def analyze_gold_trade(custom_cmp=None):
+def analyze_gold_trade(custom_cmp=None, return_data=False):
     user_override_cmp = custom_cmp
     if user_override_cmp is None and len(sys.argv) > 1:
         try:
@@ -173,8 +173,26 @@ def analyze_gold_trade(custom_cmp=None):
     card.append("=" * 76 + "\n")
 
     card_text = "\n".join(card)
-    print(card_text)
-    return card_text
+    if not return_data:
+        print(card_text)
+        return card_text
+
+    return {
+        "commodity": "Gold Ten (10 Grams)",
+        "cmp": cmp,
+        "direction": dir_key,
+        "trade_bias": trade_bias,
+        "prob_pct": prob_pct,
+        "rating": rating,
+        "reasons": reasons,
+        "sl_price": sl_price,
+        "t1_price": t1_price,
+        "t2_price": t2_price,
+        "t3_price": t3_price,
+        "t1_profit_inr": t1_points * 1.0,
+        "sl_risk_inr": sl_points * 1.0,
+        "card_text": card_text
+    }
 
 
 if __name__ == "__main__":
