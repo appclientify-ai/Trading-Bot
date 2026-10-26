@@ -1499,6 +1499,17 @@ def start_bot():
     scanner_thread = threading.Thread(target=background_scanner_loop, args=(token,), daemon=True)
     scanner_thread.start()
 
+    # Launch Dedicated News Bot in parallel if TELEGRAM_NEWS_BOT_TOKEN is provided
+    news_tok = os.getenv("TELEGRAM_NEWS_BOT_TOKEN")
+    if news_tok and news_tok.strip() and news_tok != "YOUR_NEWS_BOT_TOKEN_HERE":
+        try:
+            from news_bot import start_news_bot
+            news_thread = threading.Thread(target=start_news_bot, daemon=True)
+            news_thread.start()
+            print("🚀 Dual-Bot Mode: Dedicated News Bot successfully launched in background thread!")
+        except Exception as e:
+            print(f"[-] News bot thread startup error: {e}")
+
     last_update_id = 0
 
     while True:
