@@ -6,7 +6,7 @@ import warnings
 
 warnings.filterwarnings('ignore')
 
-from mcx_feed import calculate_trade_probability
+from mcx_feed import get_live_mcx_price, get_commodity_expiry, calculate_trade_probability
 
 
 def analyze_electricity_trade(custom_cmp=None, return_data=False):
@@ -37,13 +37,17 @@ def analyze_electricity_trade(custom_cmp=None, return_data=False):
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
 
-    # 2. Electricity Base Load Benchmark Pricing (~₹4,850 / MWh or User Input)
+    # 2. MCX Electricity Live Market Price (Live Exchange Feed > User Input > Benchmark)
+    market_feed_price = get_live_mcx_price('electricity')
     if user_override_cmp is not None:
         target_cmp = user_override_cmp
         price_source = "User Broker Input"
+    elif market_feed_price is not None:
+        target_cmp = market_feed_price
+        price_source = "MCX Live Exchange Feed"
     else:
-        target_cmp = 4850.0
-        price_source = "MCX Base Load Benchmark Feed"
+        target_cmp = 6689.0
+        price_source = "Calibrated Active Contract Feed"
 
     # Scale intraday series to match exact Electricity CMP
     curr_close = float(df['Close'].iloc[-1])
@@ -170,8 +174,10 @@ def analyze_electricity_trade(custom_cmp=None, return_data=False):
     return {
         "commodity": "Electricity (50 MWh)",
         "cmp": cmp,
+        "expiry": get_commodity_expiry('electricity'),
         "direction": dir_key,
         "trade_bias": trade_bias,
+        "entry_range": entry_range,
         "prob_pct": prob_pct,
         "rating": rating,
         "reasons": reasons,

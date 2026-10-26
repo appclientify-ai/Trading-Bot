@@ -1,4 +1,29 @@
+# Environment & Secrets (NEVER COMMIT SENSITIVE TOKENS)
 .env
+.env.local
+*.env
+
+# Python
 .venv/
+env/
+venv/
 __pycache__/
+*.pyc
+*.pyo
+
+# Logs & Local Databases
 *.log
+trading_data.db
+*.db
+*.sqlite3
+
+# Reports & Exports
+reports/
+*.csv
+
+# Local Subscriber & Audit JSONs (Privacy protection)
+subscribers.json
+news_subscribers.json
+daily_audit.json
+scanner_config.json
+user_active_trades.json
