@@ -26,8 +26,15 @@ from zinc_advisor import analyze_zinc_trade
 from nickel_advisor import analyze_nickel_trade
 from electricity_advisor import analyze_electricity_trade
 from mcx_feed import get_live_mcx_price, get_live_dollar_price, get_commodity_expiry, calculate_expected_time
+from macro_analyzer import (
+    analyze_macro_sentiment,
+    analyze_commodity_news,
+    get_usd_trend_for_commodities,
+    format_usd_trend_report,
+    fetch_news_feed,
+    analyze_headline_price_impact
+)
 from swing_advisor import analyze_btst_swing
-from macro_analyzer import analyze_macro_sentiment, analyze_commodity_news
 from smc_engine import analyze_smc_setup
 from database import (
     save_trade_db, db_load_daily_audit, db_record_user_taken,
@@ -50,7 +57,26 @@ alert_cooldowns = {}
 eod_report_sent_date = None
 
 
-# 1. Cloud Health Server (Render.com 24/7 compatibility)
+# 1. Operating Hours & Market Window Check (08:00 AM - 12:00 AM Midnight IST)
+def is_bot_active_hours():
+    """
+    Bot Active Operating Window:
+    08:00 AM to 12:00 AM (Midnight, 24:00 IST)
+    Monday through Friday for MCX trading & international pre/post market.
+    """
+    ist = timezone(timedelta(hours=5, minutes=30))
+    now = datetime.now(ist)
+    if now.weekday() >= 5:  # Saturday or Sunday (MCX closed)
+        return False
+    return 8 <= now.hour < 24
+
+
+def is_mcx_open():
+    """Returns True if within bot active operating window (8:00 AM - 12:00 AM IST on weekdays)"""
+    return is_bot_active_hours()
+
+
+# 2. Cloud Health Server (Render.com 24/7 compatibility & Keep-Alive)
 def start_health_server():
     port = int(os.environ.get("PORT", 8080))
     class HealthHandler(http.server.SimpleHTTPRequestHandler):
@@ -61,23 +87,31 @@ def start_health_server():
             status_data = {
                 "status": "healthy",
                 "service": "MCX Futures Trading & Auto-Scanner Engine",
+                "operating_hours": "08:00 AM - 12:00 AM IST",
+                "is_active_window": is_mcx_open(),
                 "uptime_check": "OK",
-                "mcx_open": is_mcx_open(),
                 "time": time.time()
             }
             self.wfile.write(json.dumps(status_data).encode("utf-8"))
+
+        def do_HEAD(self):
+            self.send_response(200)
+            self.send_header("Content-type", "application/json")
+            self.end_headers()
 
         def log_message(self, format, *args):
             pass
 
     try:
+        socketserver.TCPServer.allow_reuse_address = True
         with socketserver.TCPServer(("", port), HealthHandler) as httpd:
-            print(f"[+] Cloud Health Server active on port {port} (Render & UptimeRobot ready)")
+            print(f"[+] Cloud Health Server active on port {port} (Render & UptimeRobot ready | 08:00 AM - 12:00 AM IST)")
             httpd.serve_forever()
-    except Exception:
-        pass
+    except Exception as e:
+        print(f"[-] Health server startup notice: {e}")
 
 threading.Thread(target=start_health_server, daemon=True).start()
+
 
 
 # 2. Persistence Helpers
@@ -214,18 +248,7 @@ def record_user_trade_taken(chat_id, trade_id):
         pass
 
 
-# 3. MCX Market Hours Check (IST: UTC + 5:30)
-def is_mcx_open():
-    ist = timezone(timedelta(hours=5, minutes=30))
-    now = datetime.now(ist)
-    if now.weekday() >= 5:  # Saturday or Sunday
-        return False
-    hour, minute = now.hour, now.minute
-    if 9 <= hour < 23:
-        return True
-    if hour == 23 and minute <= 35:
-        return True
-    return False
+# 3. Market Window Reference (08:00 AM - 12:00 AM IST managed via is_bot_active_hours)
 
 
 # 4. Telegram API Messaging & Callback Helpers
@@ -399,6 +422,7 @@ def get_keyboard():
         "keyboard": [
             [{"text": "🪙 Silver Micro (1 Kg)"}, {"text": "🛢️ Crude Oil Mini (10 BBL)"}],
             [{"text": "🥇 Gold Ten (10g)"}, {"text": "🔥 Nat Gas Mini (250)"}],
+            [{"text": "💵 USD (DXY) Trend Radar"}, {"text": "📰 Global News Radar"}],
             [{"text": "⚙️ Aluminium Mini (1 MT)"}, {"text": "🔩 Zinc Mini (1 MT)"}],
             [{"text": "🪙 Nickel (250 Kg)"}, {"text": "⚡ Electricity (50 MWh)"}],
             [{"text": "🏛️ SMC Institutional Setups"}, {"text": "🌙 BTST / Swing Advisory"}],
@@ -536,6 +560,14 @@ def format_mobile_trading_card(res, usd_ref=None, is_alert=False, trade_id=None,
         f"💡 <b>Setup     :</b> {clean_reason}",
         f"📋 <b>Strategy  :</b> T1 aate hi 50% book karein, SL Cost par trail karein."
     ]
+
+    # Live USD (DXY) Trend Radar for Silver, Gold & Crude Oil
+    if any(k in comm_name for k in ["SILVER", "GOLD", "CRUDE"]):
+        try:
+            usd_data = get_usd_trend_for_commodities()
+            card.append(f"{usd_data.get('short_badge', '')}")
+        except Exception:
+            pass
 
     if usd_ref:
         card.append(f"🌐 <b>Global Ref:</b> <code>{usd_ref}</code>")
@@ -920,11 +952,11 @@ def background_scanner_loop(bot_token):
             # 2. Run market scanner cycle
             run_scanner_cycle(bot_token)
 
-            # Auto EOD Broadcast at 23:35 IST (MCX Market Close)
+            # Auto EOD Broadcast at 23:55 IST (Right before Midnight Market Close)
             ist = timezone(timedelta(hours=5, minutes=30))
             now_ist = datetime.now(ist)
             today_str = now_ist.strftime("%Y-%m-%d")
-            if now_ist.hour == 23 and now_ist.minute >= 35 and eod_report_sent_date != today_str:
+            if now_ist.hour == 23 and now_ist.minute >= 55 and eod_report_sent_date != today_str:
                 eod_report_sent_date = today_str
                 report = generate_eod_report(today_str)
                 print(f"[+] Broadcasting End-of-Day Audit Report for {today_str}...")
@@ -939,6 +971,112 @@ def background_scanner_loop(bot_token):
         except Exception:
             interval_sec = 45
         time.sleep(interval_sec)
+
+
+# 6B. Automatic Real-Time News & Macro Impact Broadcaster (08:00 AM - 12:00 AM)
+def format_breaking_news_alert(article, impact, usd_trend=None):
+    ist = timezone(timedelta(hours=5, minutes=30))
+    time_str = datetime.now(ist).strftime("%I:%M %p")
+    card = [
+        "🚨 <b>BREAKING NEWS & MCX PRICE IMPACT ALERT</b> 🚨",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"📰 <b>Headline :</b> <b>{html.escape(article['title'])}</b>",
+        f"🏢 <b>Source   :</b> <i>{html.escape(article.get('source', 'Financial Wire'))}</i>  |  ⏰ <code>{time_str} IST</code>",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"🎯 <b>COMMODITY IMPACT :</b> <b>{impact['commodity']}</b>",
+        f"🧭 <b>PRICE DIRECTION  :</b> <b>{impact['direction']}</b>",
+        "━━━━━━━━━━━━━━━━━━━━━━",
+        f"🧐 <b>MARKET MEANING:</b>\n{impact['meaning']}\n",
+        f"📈 <b>MCX PRICE EFFECT:</b>\n{impact['price_effect']}\n",
+        f"💰 <b>EXPECTED MOVE:</b>\n{impact['expected_move']}\n",
+        f"💡 <b>ACTION PLAN:</b>\n{impact['strategy']}",
+        "━━━━━━━━━━━━━━━━━━━━━━"
+    ]
+    if usd_trend:
+        card.append(f"{usd_trend.get('short_badge', '')}")
+        card.append("━━━━━━━━━━━━━━━━━━━━━━")
+    return "\n".join(card)
+
+
+def background_news_monitor(bot_token, news_token=None):
+    """
+    Automatic Background News & Macro Impact Monitor:
+    - Runs from 08:00 AM to 12:00 AM IST.
+    - Monitors real-time financial RSS news every 180 seconds for Gold, Silver, Crude Oil, NatGas & Macro.
+    - Automatically analyzes price impact and broadcasts instant alerts to all subscribers.
+    """
+    print("🚀 Automatic Real-Time News Monitor Started (8:00 AM - 12:00 AM IST)...")
+    seen_file = os.path.join(BASE_DIR, "seen_news_headlines.json")
+    seen_titles = set()
+    if os.path.exists(seen_file):
+        try:
+            with open(seen_file, "r", encoding="utf-8") as f:
+                seen_titles = set(json.load(f))
+        except Exception:
+            seen_titles = set()
+
+    is_initial_seed = (len(seen_titles) == 0)
+    time.sleep(15)  # initial boot delay
+
+    while True:
+        try:
+            ist = timezone(timedelta(hours=5, minutes=30))
+            now_ist = datetime.now(ist)
+            # Active window: 8:00 AM to 12:00 AM IST (hour 8 to 23)
+            in_window = (8 <= now_ist.hour < 24)
+
+            if in_window:
+                articles = fetch_news_feed("all")
+                new_alerts = []
+
+                for art in articles:
+                    title = art.get('title', '').strip()
+                    if not title or title in seen_titles:
+                        continue
+
+                    if is_initial_seed:
+                        seen_titles.add(title)
+                        continue
+
+                    seen_titles.add(title)
+                    impact = analyze_headline_price_impact(title, art.get('comm_type'))
+                    if impact.get('sentiment_score', 0) != 0 or "RANGE-BOUND" not in impact.get('direction', ''):
+                        new_alerts.append((art, impact))
+
+                if is_initial_seed:
+                    is_initial_seed = False
+                    try:
+                        with open(seen_file, "w", encoding="utf-8") as f:
+                            json.dump(list(seen_titles)[-300:], f)
+                    except Exception:
+                        pass
+
+                if new_alerts:
+                    usd_trend = get_usd_trend_for_commodities()
+                    for art, impact in new_alerts[:2]:
+                        alert_card = format_breaking_news_alert(art, impact, usd_trend)
+                        print(f"[!] 🚨 Auto-broadcasting Breaking News: {art['title'][:40]}...")
+                        broadcast_alert(bot_token, alert_card)
+
+                        if news_token:
+                            try:
+                                from news_bot import news_subscribers, send_message as send_news_msg
+                                for cid in list(news_subscribers):
+                                    send_news_msg(news_token, cid, alert_card)
+                            except Exception as e:
+                                print(f"[-] News bot broadcast error: {e}")
+                        time.sleep(1.0)
+
+                    try:
+                        with open(seen_file, "w", encoding="utf-8") as f:
+                            json.dump(list(seen_titles)[-300:], f)
+                    except Exception:
+                        pass
+
+        except Exception as e:
+            print(f"[-] News monitor loop error: {e}")
+
+        time.sleep(180)
 
 
 # 7. Inline Button Callback Query Handler
@@ -1306,7 +1444,10 @@ def handle_message(bot_token, chat_id, user_text, user_name):
         cur_int = get_db_config("scan_interval", "45")
         status_msg = (
             f"📊 <b>BOT & SCANNER LIVE STATUS</b>\n\n"
-            f"• <b>MCX Market Status :</b> {'🟢 OPEN' if is_open else '🔴 CLOSED / SLEEP'}\n"
+            f"• <b>Operating Schedule :</b> ⏰ <b>08:00 AM - 12:00 AM IST</b>\n"
+            f"• <b>Current Bot State  :</b> {'🟢 ACTIVE & SCANNING' if is_open else '🔴 CLOSED / SLEEP'}\n"
+            f"• <b>Live News Monitor  :</b> 🟢 AUTO-UPDATE ACTIVE (Every 3m)\n"
+            f"• <b>USD/DXY Watchlist  :</b> Silver, Gold & Crude Oil Radar Active 💵\n"
             f"• <b>Active Watchlist   :</b> {wl_str} ({len(active_wl)}/8 Active)\n"
             f"• <b>Auto-Scan Interval :</b> Every {cur_int} Seconds ⚡\n"
             f"• <b>Priority Hierarchy :</b> Silver Micro (1 Kg) ➡️ Crude Oil (10 BBL) ➡️ Gold Ten (10g) ➡️ Others\n"
@@ -1322,8 +1463,15 @@ def handle_message(bot_token, chat_id, user_text, user_name):
         send_telegram_message(bot_token, chat_id, status_msg, parse_mode="HTML", reply_markup=get_keyboard())
         return
 
+    # USD & DXY TREND RADAR FOR SILVER, GOLD & CRUDE OIL
+    if clean_text in ["/usd", "/dxy", "/dollar", "💵 usd (dxy) trend radar", "💵 usd trend radar", "usd", "dxy"]:
+        send_telegram_message(bot_token, chat_id, "⏳ <i>Live US Dollar Index (DXY) aur Silver, Gold, Crude correlation scan ho raha hai...</i>", parse_mode="HTML")
+        report = format_usd_trend_report()
+        send_telegram_message(bot_token, chat_id, report, parse_mode="HTML", reply_markup=get_keyboard())
+        return
+
     # GLOBAL MACRO & COMMODITY NEWS PRICE IMPACT COMMAND
-    if clean_text in ["/news", "/macro", "news", "macro"]:
+    if clean_text in ["/news", "/macro", "news", "macro", "📰 global news radar"]:
         send_telegram_message(bot_token, chat_id, "⏳ <i>Global Macro & News Radar scan ho raha hai... Sabhi stories ka MCX price effect analyze ho raha hai...</i>", parse_mode="HTML")
         report = analyze_macro_sentiment()
         send_telegram_message(bot_token, chat_id, report, parse_mode="HTML", reply_markup=get_keyboard())
@@ -1467,11 +1615,12 @@ def start_bot():
         # Register Telegram Menu Commands
         trading_commands = [
             {"command": "start", "description": "Start Bot & Open Control Panel"},
+            {"command": "usd", "description": "USD (DXY) Trend & Silver, Gold, Crude Impact"},
+            {"command": "news", "description": "Global Macro & News Price Impact Analysis"},
             {"command": "watchlist", "description": "Select Commodities for Auto-Scan & SMC Alerts"},
             {"command": "export", "description": "Weekly/Monthly Excel (.csv) Audit Report"},
             {"command": "smc", "description": "Smart Money Concepts Institutional Analysis"},
             {"command": "btst", "description": "On-Demand BTST / STBT & Swing Analysis"},
-            {"command": "news", "description": "Global Macro & News Price Impact Analysis"},
             {"command": "report", "description": "Daily Audit & Personal P&L Report"},
             {"command": "scan", "description": "Run Live Scan for A+ Setups"},
             {"command": "status", "description": "Check Scanner & Active Trades"},
@@ -1509,6 +1658,10 @@ def start_bot():
             print("🚀 Dual-Bot Mode: Dedicated News Bot successfully launched in background thread!")
         except Exception as e:
             print(f"[-] News bot thread startup error: {e}")
+
+    # Start Background Real-time News Monitor & Alert Broadcaster Thread (08:00 AM - 12:00 AM)
+    news_monitor_thread = threading.Thread(target=background_news_monitor, args=(token, news_tok), daemon=True)
+    news_monitor_thread.start()
 
     last_update_id = 0
 

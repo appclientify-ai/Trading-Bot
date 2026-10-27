@@ -144,6 +144,13 @@ def analyze_crude_trade(custom_cmp=None, return_data=False):
     card.append(f"• Market Trade Bias         : >> {trade_bias} <<")
     card.append(f"• Recommended Entry Zone    : {entry_range}")
     card.append(f"• Global NYMEX Benchmark    : ${cmp_usd:.2f}/bbl  (USD/INR: ₹{usdinr:.2f})")
+    try:
+        from macro_analyzer import get_usd_trend_for_commodities
+        usd_meta = get_usd_trend_for_commodities()
+        card.append(f"• US Dollar (DXY) Trend     : {usd_meta['dxy']} [{usd_meta['trend_status']}]")
+        card.append(f"• USD Impact on Crude       : {usd_meta['crude_impact']}")
+    except Exception:
+        pass
     card.append("-" * 76)
     card.append(f"⚡ RECOMMENDED TRADE DIRECTION: {direction}")
     card.append(f"🎲 PREDICTION CHANCE / WIN PROBABILITY: {prob_pct}% [{rating}]")

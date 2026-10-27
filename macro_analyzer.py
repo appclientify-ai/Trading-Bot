@@ -1,8 +1,9 @@
 import re
+import time
 import requests
 import xml.etree.ElementTree as ET
 import yfinance as yf
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import warnings
 
 warnings.filterwarnings('ignore')
@@ -503,6 +504,125 @@ def analyze_custom_news_query(query_text):
         f"💡 <b>Actionable Trading Strategy:</b>\n{impact['strategy']}\n",
         "═" * 38,
         f"📊 <i>Live Macro Context: DXY = {indicators['dxy']} | US 10Y Yield = {indicators['yield_10y']}%</i>"
+    ]
+    return "\n".join(card)
+
+
+_USD_TREND_CACHE = {'data': None, 'time': 0}
+
+
+def get_usd_trend_for_commodities():
+    """
+    Tracks real-time US Dollar Index (DXY) and USD/INR exchange rate trends,
+    and analyzes their specific correlation & price impact on:
+    1. MCX Silver Micro (1 Kg)
+    2. MCX Gold Ten (10g)
+    3. MCX Crude Oil Mini (10 BBL)
+    """
+    now = time.time()
+    if _USD_TREND_CACHE['data'] and (now - _USD_TREND_CACHE['time']) < 60:
+        return _USD_TREND_CACHE['data']
+
+    dxy = 102.0
+    usdinr = 95.20
+    try:
+        t_dxy = yf.Ticker("DX-Y.NYB")
+        dxy_val = float(t_dxy.fast_info['lastPrice'])
+        if dxy_val > 0:
+            dxy = round(dxy_val, 2)
+    except Exception:
+        pass
+
+    try:
+        t_inr = yf.Ticker("USDINR=X")
+        inr_val = float(t_inr.fast_info['lastPrice'])
+        if inr_val > 0:
+            usdinr = round(inr_val, 2)
+    except Exception:
+        pass
+
+    if dxy < 102.5:
+        trend = "BEARISH_WEAK"
+        trend_status = "🔻 WEAKENING / BEARISH DOLLAR"
+        overall_impact = "🟢 POWERFUL BULLISH TAILWIND (Heavy Inflows into Silver, Gold & Crude)"
+        silver_impact = "🟢 STRONG BULLISH (+₹1,500 to +₹3,200/kg)"
+        silver_note = "Dollar girne se COMEX Silver me massive short covering hoti hai. MCX Silver Micro par aggressive buy on dips banta hai."
+        gold_impact = "🟢 BULLISH RALLY (+₹600 to +₹1,400/10g)"
+        gold_note = "Central banks aur institutional funds dollar chhod kar bullion me liquidity move karte hain."
+        crude_impact = "🟢 DEMAND SURGE (+₹120 to +₹250/bbl)"
+        crude_note = "Dollar kamzor hone se global buyers ke liye crude sasta ho jaata hai, physical demand spike hoti hai."
+        short_badge = f"💵 <b>USD (DXY):</b> <code>{dxy}</code> 🔻 Weakening | <b>Impact:</b> 🟢 Bullish Tailwind for Bullion & Oil"
+    elif dxy > 105.0:
+        trend = "BULLISH_STRONG"
+        trend_status = "🔺 STRONG / BULLISH DOLLAR"
+        overall_impact = "🔴 BEARISH HEADWIND / PULLBACK RISK (Selling Pressure on Commodities)"
+        silver_impact = "🔴 PULLBACK / CAUTION (-₹800 to -₹1,800/kg)"
+        silver_note = "Strong Dollar se foreign bullion demand drop hoti hai. Resistance par profit booking aati hai."
+        gold_impact = "🔴 CONSOLIDATION / RETRACEMENT (-₹400 to -₹900/10g)"
+        gold_note = "Bond yields aur Dollar strong hone par Gold par temporary ceiling lagti hai."
+        crude_impact = "🔴 PRESSURE / RESISTANCE (-₹80 to -₹180/bbl)"
+        crude_note = "Dollar strong hone se importing nations ki purchasing cost badh jaati hai, rally sustain hona mushkil hota hai."
+        short_badge = f"💵 <b>USD (DXY):</b> <code>{dxy}</code> 🔺 Strong | <b>Impact:</b> ⚠️ Headwind / Pullback on Bullion & Oil"
+    else:
+        trend = "NEUTRAL"
+        trend_status = "⚖️ RANGE-BOUND / NEUTRAL (102.5 - 105.0)"
+        overall_impact = "⚖️ BALANCED / TECHNICALS DRIVEN (Commodities will follow individual charts & supply/demand)"
+        silver_impact = "⚖️ RANGE-BOUND (Follow MCX Technical Levels)"
+        silver_note = "Dollar neutral zone me hai. Silver EMA support aur RSI levels ke mutabiq trade karegi."
+        gold_impact = "⚖️ CONSOLIDATION (Support par Buy, Resistance par Sell)"
+        gold_note = "Market fresh Fed interest rate cues aur inflation prints ka intezaar kar raha hai."
+        crude_impact = "⚖️ RANGE-BOUND (OPEC+ & Middle East News Driven)"
+        crude_note = "Crude price geopolitical risk premium aur weekly inventory par depend karegi."
+        short_badge = f"💵 <b>USD (DXY):</b> <code>{dxy}</code> ⚖️ Range-bound | <b>Impact:</b> 📊 Levels Driven"
+
+    data = {
+        'dxy': dxy,
+        'usdinr': usdinr,
+        'trend': trend,
+        'trend_status': trend_status,
+        'overall_impact': overall_impact,
+        'silver_impact': silver_impact,
+        'silver_note': silver_note,
+        'gold_impact': gold_impact,
+        'gold_note': gold_note,
+        'crude_impact': crude_impact,
+        'crude_note': crude_note,
+        'short_badge': short_badge,
+        'time': now
+    }
+    _USD_TREND_CACHE['data'] = data
+    _USD_TREND_CACHE['time'] = now
+    return data
+
+
+def format_usd_trend_report():
+    data = get_usd_trend_for_commodities()
+    ist = timezone(timedelta(hours=5, minutes=30))
+    time_str = datetime.now(ist).strftime("%I:%M %p")
+    card = [
+        "💵 <b>USD (DOLLAR INDEX) LIVE TREND & COMMODITIES RADAR</b>",
+        "═" * 38,
+        f"⏰ <b>Radar Time          :</b> <code>{time_str} IST</code>",
+        f"📈 <b>US Dollar Index (DXY):</b> <code>{data['dxy']}</code>",
+        f"🧭 <b>Dollar Trend State   :</b> <b>{data['trend_status']}</b>",
+        f"🇮🇳 <b>USD/INR Exchange Rate :</b> <code>₹{data['usdinr']}</code>",
+        "═" * 38,
+        f"🌐 <b>OVERALL MARKET IMPACT:</b>\n{data['overall_impact']}\n",
+        "═" * 38,
+        "🪙 <b>1. SILVER MICRO (1 KG) IMPACT:</b>",
+        f"• <b>Status :</b> <b>{data['silver_impact']}</b>",
+        f"• <b>Detail :</b> {data['silver_note']}\n",
+        "🥇 <b>2. GOLD TEN (10G) IMPACT:</b>",
+        f"• <b>Status :</b> <b>{data['gold_impact']}</b>",
+        f"• <b>Detail :</b> {data['gold_note']}\n",
+        "🛢️ <b>3. CRUDE OIL MINI (10 BBL) IMPACT:</b>",
+        f"• <b>Status :</b> <b>{data['crude_impact']}</b>",
+        f"• <b>Detail :</b> {data['crude_note']}\n",
+        "═" * 38,
+        "📌 <b>INSTITUTIONAL COMMODITIES GOLDEN RULES:</b>",
+        "• <b>DXY 102.5 ke niche:</b> Silver, Gold aur Crude me Aggressive BUY setups lein (+₹1,500+ Silver, +₹120+ Crude).",
+        "• <b>DXY 105.0 ke upar:</b> Long positions me profit book karein, strict SL trail karein.",
+        "• <b>Rupee Weakening (USD/INR up):</b> MCX domestic prices ko international prices ke mukable extra boost milta hai."
     ]
     return "\n".join(card)
 

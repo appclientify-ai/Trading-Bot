@@ -18,7 +18,9 @@ from macro_analyzer import (
     analyze_macro_sentiment,
     analyze_commodity_news,
     analyze_custom_news_query,
-    fetch_macro_indicators
+    fetch_macro_indicators,
+    get_usd_trend_for_commodities,
+    format_usd_trend_report
 )
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -113,7 +115,7 @@ def get_keyboard():
         "keyboard": [
             [{"text": "🌍 All Macro & News Radar"}],
             [{"text": "🛢️ Crude Oil & War News"}, {"text": "🪙 Silver, Gold & Fed News"}],
-            [{"text": "🔥 NatGas & Weather News"}, {"text": "💵 Dollar (DXY) & Yields"}],
+            [{"text": "💵 Dollar (DXY) & USD Trend"}, {"text": "🔥 NatGas & Weather News"}],
             [{"text": "❓ Help & Custom News"}]
         ],
         "resize_keyboard": True,
@@ -177,25 +179,11 @@ def handle_message(bot_token, chat_id, user_text, user_name):
         send_message(bot_token, chat_id, report, reply_markup=get_keyboard())
         return
 
-    # DOLLAR (DXY) & YIELDS
-    if low_text in ["/dxy", "/yield", "💵 dollar (dxy) & yields"]:
-        ind = fetch_macro_indicators()
-        card = [
-            "💵 <b>US DOLLAR INDEX (DXY) & US 10-YR YIELD IMPACT RADAR</b>",
-            "═" * 38,
-            f"• <b>DXY Index Level   :</b> <code>{ind['dxy']}</code>",
-            f"• <b>Dollar Status      :</b> {ind['dxy_status']}",
-            f"• <b>MCX Price Effect   :</b> {ind['dxy_impact']}\n",
-            f"• <b>US 10-Yr Bond Yield:</b> <code>{ind['yield_10y']}%</code>",
-            f"• <b>Fed Rate Sentiment :</b> {ind['rate_sentiment']}",
-            f"• <b>Bullion Liquidity  :</b> {ind['yield_impact']}\n",
-            "═" * 38,
-            "📌 <b>TRADING GOLDEN RULES:</b>",
-            "• <b>Dollar 102.5 ke niche:</b> Silver & Gold me massive buying hoti hai (+₹1,500 to +₹3,000 in Silver).",
-            "• <b>Bond Yield 4.2% ke niche:</b> Rate cut anticipation se commodity markets rocket ban jaate hain.",
-            "• <b>Dollar 105.0 ke upar:</b> Bullion aur Crude par short-term pullbacks aate hain."
-        ]
-        send_message(bot_token, chat_id, "\n".join(card), reply_markup=get_keyboard())
+    # DOLLAR (DXY) & USD TREND RADAR
+    if low_text in ["/dxy", "/usd", "/dollar", "/yield", "💵 dollar (dxy) & yields", "💵 dollar (dxy) & usd trend", "usd", "dxy"]:
+        send_message(bot_token, chat_id, "⏳ <i>Live US Dollar Index (DXY) aur Silver, Gold, Crude correlation calculate ho raha hai...</i>")
+        report = format_usd_trend_report()
+        send_message(bot_token, chat_id, report, reply_markup=get_keyboard())
         return
 
     # CUSTOM NEWS QUERY / NATURAL LANGUAGE
