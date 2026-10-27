@@ -71,9 +71,74 @@ def get_intraday_candles(symbol, period="7d", interval="15m", max_age_seconds=25
     return pd.DataFrame()
 
 
+MONEYCONTROL_MAP = {
+    'natgas': ('NATURALGAS', 'https://www.moneycontrol.com/commodity/naturalgas-price.html'),
+    'natural_gas': ('NATURALGAS', 'https://www.moneycontrol.com/commodity/naturalgas-price.html'),
+    'natgasmini': ('NATURALGAS', 'https://www.moneycontrol.com/commodity/naturalgas-price.html'),
+    'crude': ('CRUDEOIL', 'https://www.moneycontrol.com/commodity/crudeoil-price.html'),
+    'crude_oil': ('CRUDEOIL', 'https://www.moneycontrol.com/commodity/crudeoil-price.html'),
+    'crudeoilm': ('CRUDEOIL', 'https://www.moneycontrol.com/commodity/crudeoil-price.html'),
+    'silver': ('SILVER', 'https://www.moneycontrol.com/commodity/silver-price.html'),
+    'silver_micro': ('SILVER', 'https://www.moneycontrol.com/commodity/silver-price.html'),
+    'silvermic': ('SILVER', 'https://www.moneycontrol.com/commodity/silver-price.html'),
+    'gold': ('GOLD', 'https://www.moneycontrol.com/commodity/gold-price.html'),
+    'gold_ten': ('GOLD', 'https://www.moneycontrol.com/commodity/gold-price.html'),
+    'gold_mini': ('GOLD', 'https://www.moneycontrol.com/commodity/gold-price.html'),
+    'goldm': ('GOLD', 'https://www.moneycontrol.com/commodity/gold-price.html'),
+    'aluminium': ('ALUMINIUM', 'https://www.moneycontrol.com/commodity/aluminium-price.html'),
+    'zinc': ('ZINC', 'https://www.moneycontrol.com/commodity/zinc-price.html'),
+    'nickel': ('NICKEL', 'https://www.moneycontrol.com/commodity/nickel-price.html'),
+}
+
+
+def fetch_moneycontrol_market_data(commodity_key):
+    """
+    Fetches real-time MCX price & active front-month expiry from Moneycontrol API.
+    Guarantees automatic rollover to the active traded contract (e.g. 24 Nov 2026 for NatGas).
+    """
+    key = commodity_key.lower().replace(' ', '_')
+    cfg = MONEYCONTROL_MAP.get(key)
+    if not cfg:
+        for k, v in MONEYCONTROL_MAP.items():
+            if k in key:
+                cfg = v
+                break
+    if not cfg:
+        return None
+
+    sym, page_url = cfg
+    try:
+        r = requests.get(page_url, headers=HEADERS, timeout=4)
+        if r.status_code == 200:
+            expiries = sorted(list(set(re.findall(r'value=[\'"](202\d-\d{2}-\d{2})[\'"]', r.text))))
+            if expiries:
+                front = expiries[0]
+                api_url = f'https://priceapi.moneycontrol.com/pricefeed/mcx/commodityfutures/{sym}?expiry={front}'
+                res = requests.get(api_url, headers=HEADERS, timeout=4).json()
+                if res.get('data'):
+                    d = res['data']
+                    dt = front.split('-')
+                    months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec']
+                    exp_nice = f"{int(dt[2])} {months[int(dt[1])-1]}, {dt[0]}"
+                    price = float(d.get('lastPrice')) if d.get('lastPrice') else None
+                    if price is not None and price > 0:
+                        return {
+                            'price': price,
+                            'expiry': exp_nice,
+                            'open_int': d.get('openInt'),
+                            'contract_month': d.get('contractMonth'),
+                            'source': 'MCX Exchange (Live Moneycontrol Feed)'
+                        }
+    except Exception:
+        pass
+    return None
+
+
 def fetch_mcx_market_data(commodity_key):
     """
-    Fetches real-time live LTP and contract Expiry date from MCX exchange broker feed.
+    Fetches real-time live LTP and contract Expiry date from verified MCX feeds.
+    Priority 1: Direct Moneycontrol Active Contract API (Auto-Rollover)
+    Priority 2: Upstox Exchange Feed
     Returns: {'price': float, 'expiry': str} or None
     """
     slug = SLUG_MAP.get(commodity_key.lower().replace(' ', '_'), commodity_key)
@@ -82,9 +147,23 @@ def fetch_mcx_market_data(commodity_key):
     if slug in _CACHE and (now - _CACHE[slug]['time']) < 15:
         return _CACHE[slug]
 
+    # Priority 1: Moneycontrol Direct Live Exchange Feed (Auto-Rollover to Active Contract)
+    mc_data = fetch_moneycontrol_market_data(slug)
+    if mc_data and mc_data.get('price'):
+        _CACHE[slug] = {
+            'price': mc_data['price'],
+            'cmp': mc_data['price'],
+            'expiry': mc_data['expiry'],
+            'open_int': mc_data.get('open_int'),
+            'source': mc_data.get('source'),
+            'time': now
+        }
+        return _CACHE[slug]
+
+    # Priority 2: Upstox Exchange Broker Feed
     url = f"https://upstox.com/commodity-market-trading/{slug}/"
     try:
-        r = requests.get(url, headers=HEADERS, timeout=6)
+        r = requests.get(url, headers=HEADERS, timeout=5)
         if r.status_code == 200:
             ltp_m = re.findall(r'ltp[^\d]+([0-9\.]+)', r.text)
             exp_m = re.findall(r'Expiry date</div><div[^>]*>([^<]+)</div>', r.text)
@@ -93,7 +172,7 @@ def fetch_mcx_market_data(commodity_key):
             expiry = exp_m[0].strip() if exp_m else "Active Contract"
 
             if price is not None:
-                _CACHE[slug] = {'price': price, 'expiry': expiry, 'time': now}
+                _CACHE[slug] = {'price': price, 'cmp': price, 'expiry': expiry, 'source': 'Upstox Broker Feed', 'time': now}
                 return _CACHE[slug]
     except Exception:
         pass
@@ -117,20 +196,21 @@ def get_live_mcx_price(commodity_key):
 def get_commodity_expiry(commodity_key):
     """
     Fetches the active contract expiry date from live exchange feed.
-    Returns: string (e.g. '30 Nov, 2026')
+    Returns: string (e.g. '24 Nov, 2026')
     """
     data = fetch_mcx_market_data(commodity_key)
     if data and data.get('expiry') and data.get('expiry') != "Active Contract":
         return data.get('expiry')
 
     fallbacks = {
-        'silver': '30 Nov, 26',
-        'silver_micro': '30 Nov, 26',
+        'silver': '04 Dec, 26',
+        'silver_micro': '04 Dec, 26',
         'crude': '19 Nov, 26',
         'crude_oil': '19 Nov, 26',
-        'gold': '05 Nov, 26',
-        'gold_ten': '05 Nov, 26',
-        'natgas': '27 Oct, 26',
+        'gold': '04 Dec, 26',
+        'gold_ten': '04 Dec, 26',
+        'natgas': '24 Nov, 26',
+        'natural_gas': '24 Nov, 26',
         'aluminium': '30 Oct, 26',
         'zinc': '30 Oct, 26',
         'nickel': '18 Nov, 26',

@@ -340,10 +340,12 @@ def query_trades_by_range(range_type='weekly'):
         return trades
 
 
-def evaluate_and_sync_active_trades():
+def evaluate_and_sync_active_trades(is_eod_close=False):
     """
     Checks all 'ACTIVE' trades in the database against market price range.
-    Updates outcomes (T1_HIT or SL_HIT) so reports show real results instead of stagnant 'ACTIVE'.
+    - During live session: Updates outcomes when Target 1 or Stop-Loss is hit.
+    - At session close (is_eod_close=True): Valuates any middle/open trade strictly by its Closing CMP.
+      Marks them as EOD_PROFIT / EOD_LOSS so NO trade remains stagnant as 'ACTIVE' or 'IN PROGRESS'.
     """
     with get_connection() as conn:
         active_rows = conn.execute("SELECT * FROM trades WHERE status = 'ACTIVE'").fetchall()
@@ -352,6 +354,18 @@ def evaluate_and_sync_active_trades():
 
         updated_count = 0
         from mcx_feed import get_live_mcx_price
+
+        # Commodity lot multiplier map
+        lot_map = {
+            'silver': 1.0,
+            'crude': 10.0,
+            'gold': 1.0,
+            'natgas': 250.0,
+            'aluminium': 1000.0,
+            'zinc': 1000.0,
+            'nickel': 250.0,
+            'electricity': 50.0
+        }
 
         # Cache live CMPs for commodities during this sync
         live_prices = {}
@@ -385,27 +399,33 @@ def evaluate_and_sync_active_trades():
             sl = float(r['sl'])
             entry = float(r['entry'])
             tid = r['trade_id']
-            trade_ts = float(r['timestamp'])
-            now_ts = time.time()
+            lot_mult = lot_map.get(slug, 1.0)
 
             new_status = None
             t1_hit = 0
             sl_hit = 0
 
-            if direction == "BUY":
+            is_buy = (direction == "BUY")
+            pnl_pts = (cmp - entry) if is_buy else (entry - cmp)
+            pnl_inr = round(pnl_pts * lot_mult, 0)
+
+            if is_buy:
                 if cmp >= t1:
                     new_status = "T1_HIT"
                     t1_hit = 1
                 elif cmp <= sl:
                     new_status = "SL_HIT"
                     sl_hit = 1
-                elif (now_ts - trade_ts) > (3600 * 2):
-                    # Trade older than 2 hours: mark win or loss based on current price move
-                    new_status = "T1_HIT" if cmp >= (entry + (t1 - entry) * 0.5) else "SL_HIT"
-                    if new_status == "T1_HIT":
+                elif is_eod_close:
+                    # Closing Point Valuation (Session Ended - Neither T1 nor SL Hit)
+                    if pnl_inr > 0:
+                        new_status = f"EOD_PROFIT:+₹{pnl_inr:,.0f}"
                         t1_hit = 1
-                    else:
+                    elif pnl_inr < 0:
+                        new_status = f"EOD_LOSS:-₹{abs(pnl_inr):,.0f}"
                         sl_hit = 1
+                    else:
+                        new_status = "EOD_BREAKEVEN:₹0"
             else:  # SELL
                 if cmp <= t1:
                     new_status = "T1_HIT"
@@ -413,17 +433,30 @@ def evaluate_and_sync_active_trades():
                 elif cmp >= sl:
                     new_status = "SL_HIT"
                     sl_hit = 1
-                elif (now_ts - trade_ts) > (3600 * 2):
-                    new_status = "T1_HIT" if cmp <= (entry - (entry - t1) * 0.5) else "SL_HIT"
-                    if new_status == "T1_HIT":
+                elif is_eod_close:
+                    # Closing Point Valuation (Session Ended - Neither T1 nor SL Hit)
+                    if pnl_inr > 0:
+                        new_status = f"EOD_PROFIT:+₹{pnl_inr:,.0f}"
                         t1_hit = 1
-                    else:
+                    elif pnl_inr < 0:
+                        new_status = f"EOD_LOSS:-₹{abs(pnl_inr):,.0f}"
                         sl_hit = 1
+                    else:
+                        new_status = "EOD_BREAKEVEN:₹0"
 
             if new_status:
-                conn.execute("""
-                    UPDATE trades SET status = ?, t1_hit = ?, sl_hit = ? WHERE trade_id = ?
-                """, (new_status, t1_hit, sl_hit, tid))
+                if "EOD_PROFIT" in new_status:
+                    conn.execute("""
+                        UPDATE trades SET status = ?, t1_hit = ?, sl_hit = ?, t1_profit = ? WHERE trade_id = ?
+                    """, (new_status, t1_hit, sl_hit, pnl_inr, tid))
+                elif "EOD_LOSS" in new_status:
+                    conn.execute("""
+                        UPDATE trades SET status = ?, t1_hit = ?, sl_hit = ?, sl_risk = ? WHERE trade_id = ?
+                    """, (new_status, t1_hit, sl_hit, abs(pnl_inr), tid))
+                else:
+                    conn.execute("""
+                        UPDATE trades SET status = ?, t1_hit = ?, sl_hit = ? WHERE trade_id = ?
+                    """, (new_status, t1_hit, sl_hit, tid))
                 updated_count += 1
 
         conn.commit()
@@ -528,6 +561,17 @@ def generate_excel_csv_report(range_type='weekly'):
                 sl_hits += 1
                 pnl = -float(t['sl_risk'])
                 status_label = f"STOP-LOSS HIT (-₹{abs(pnl):,.0f}) 🛑"
+            elif "EOD_PROFIT" in status:
+                t1_hits += 1
+                pnl = float(t['t1_profit'])
+                status_label = f"CLOSED AT EOD (+₹{pnl:,.0f}) ✅"
+            elif "EOD_LOSS" in status:
+                sl_hits += 1
+                pnl = -float(t['sl_risk'])
+                status_label = f"CLOSED AT EOD (-₹{abs(pnl):,.0f}) 🛑"
+            elif "EOD_BREAKEVEN" in status:
+                pnl = 0.0
+                status_label = "CLOSED AT EOD (BREAKEVEN ₹0) ⚖️"
             else:
                 active_count += 1
                 status_label = "ACTIVE / IN PROGRESS ⏳"

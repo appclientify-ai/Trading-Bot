@@ -54,8 +54,8 @@ def analyze_natgas_trade(custom_cmp=None, return_data=False):
         target_cmp = market_feed_price
         price_source = "MCX Live Exchange Feed"
     else:
-        target_cmp = 240.60
-        price_source = "Calibrated MCX Active Contract"
+        target_cmp = 288.0
+        price_source = "Calibrated MCX Active Contract (Nov 2026)"
 
     # Scale intraday series to match exact MCX CMP
     curr_close = float(df['Close'].iloc[-1])
